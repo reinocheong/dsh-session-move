@@ -1,0 +1,7 @@
+# dsh-session-move bundle layer: inserts the session-move plugin row.
+# The browser half is discovered through the package.json dsh.client declaration;
+# the host half registers /__sessionmove/* endpoints and the
+# workbench_session_* tools.
+- insert:
+    - id: session-move
+      name: dsh-session-move
