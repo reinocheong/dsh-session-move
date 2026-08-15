@@ -41,7 +41,9 @@ import os from 'node:os'
 import { promisify } from 'node:util'
 import { constants, zstdCompress, zstdDecompress } from 'node:zlib'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { generateSessionTitleWithLlm, resolveSessionTitleLlmConfig } from '@deepseek-ai/dsh-session-title-llm'
+import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { resolveSessionTitleLlmConfig } from '@deepseek-ai/dsh-session-title-llm'
+import { normalizeSessionTitle } from '@deepseek-ai/dsh-session-title'
 
 const name = 'dsh-session-move'
 // Required services. 'tools' powers the model tools; 'sessions' and 'llm'
@@ -397,26 +399,19 @@ async function moveSessionCore(ctx, sessionId, workspaceId) {
   //    the new one (attachSession validates the header cwd == target path —
   //    now satisfied by the refreshed in-memory index — and re-accounts the
   //    session under the target workspace).
-  const debug = { reg: !!reg, regGet: typeof reg?.get === 'function' }
   let oldWorkspaceId = null
   if (oldWorkspace) {
     oldWorkspaceId = oldWorkspace.workspaceId
     const entity = reg && typeof reg.get === 'function' ? reg.get(oldWorkspaceId) : undefined
-    debug.oldEntity = !!entity
-    debug.oldDetach = typeof entity?.detachSession === 'function'
     if (entity && typeof entity.detachSession === 'function') {
       try { await entity.detachSession(sessionId) } catch (e) {
-        debug.detachError = String(e?.message ?? e)
         ctx.logger?.warn?.('[dsh-session-move] detach failed:', e?.message ?? e)
       }
     }
   }
   const newEntity = reg && typeof reg.get === 'function' ? reg.get(target.workspaceId) : undefined
-  debug.newEntity = !!newEntity
-  debug.newAttach = typeof newEntity?.attachSession === 'function'
   if (newEntity && typeof newEntity.attachSession === 'function') {
     try { await newEntity.attachSession(sessionId) } catch (e) {
-      debug.attachError = String(e?.message ?? e)
       ctx.logger?.warn?.('[dsh-session-move] attach failed:', e?.message ?? e)
     }
   }
@@ -429,7 +424,6 @@ async function moveSessionCore(ctx, sessionId, workspaceId) {
     newCwd: target.path,
     oldWorkspaceId,
     newWorkspaceId: target.workspaceId,
-    debug,
   }
 }
 
@@ -553,10 +547,10 @@ async function deleteSessionCore(ctx, sessionId) {
 // official session-title-llm provider ships with, and can be overridden via
 // the plugin row config (see README).
 const AI_RENAME_DEFAULTS = {
-  targetWords: 5,
-  targetCjkCharacters: 10,
-  maxInputBytes: 4096,
-  maxOutputTokens: 64,
+  targetWords: 6,
+  targetCjkCharacters: 14,
+  maxInputBytes: 8192,
+  maxOutputTokens: 96,
   timeoutMs: 60000,
 }
 
@@ -577,10 +571,12 @@ function collectSessionTitleMessages(events, throughSeq) {
   return messages
 }
 
-// Select the messages fed to the title LLM: keep the FIRST user message (the
-// conversation's opening intent) plus the RECENT tail, trimming from the
-// middle until the framed JSON input fits within maxInputBytes. Titles need
-// the gist, not the transcript.
+// Select the messages fed to the title LLM. Long conversations are sampled
+// EVENLY across the whole timeline (first + last always kept, interior points
+// spaced by index) so the title model sees the arc of the conversation —
+// opening intent, middle development, recent tail — instead of only the first
+// and last few messages. The sample size is the largest that still fits
+// within maxInputBytes.
 function selectTitleMessages(messages, maxInputBytes) {
   if (messages.length === 0) return messages
   const fits = (candidates) => {
@@ -588,24 +584,53 @@ function selectTitleMessages(messages, maxInputBytes) {
     return Buffer.byteLength(framed, 'utf8') <= maxInputBytes
   }
   if (fits(messages)) return messages
-  // Binary search the largest recent-tail size (plus the first message) that
-  // still fits. Always keep messages[0] when present.
-  const first = [messages[0]]
-  let lo = 0
-  let hi = messages.length - 1
-  let best = messages
+  // Sample k evenly-spaced messages (always including both ends) for k from
+  // large to small until the framed input fits. Binary search over k.
+  const sample = (k) => {
+    if (k <= 0) return [messages[0]]
+    if (k >= messages.length) return messages
+    const picked = []
+    for (let i = 0; i < k; i++) {
+      const index = Math.round((i / (k - 1)) * (messages.length - 1))
+      picked.push(messages[index])
+    }
+    // De-duplicate in case rounding collapsed adjacent indices.
+    const seen = new Set()
+    return picked.filter((m) => {
+      if (seen.has(m.seq)) return false
+      seen.add(m.seq)
+      return true
+    })
+  }
+  let lo = 1
+  let hi = messages.length
+  let best = [messages[0]]
   while (lo <= hi) {
     const mid = Math.floor((lo + hi) / 2)
-    const tail = messages.slice(messages.length - mid)
-    const merged = [...first, ...tail]
-    if (fits(merged)) {
-      best = merged
+    const candidates = sample(mid)
+    if (fits(candidates)) {
+      best = candidates
       lo = mid + 1
     } else {
       hi = mid - 1
     }
   }
   return best
+}
+
+// Resolve one session's events: live session first, persisted replay second.
+// (Kept for potential future read-only surfaces; the rename path needs the
+// live session object itself, so it resolves it directly.)
+async function readSessionEvents(ctx, sessionId) {
+  const live = ctx.sessions?.get?.(sessionId)
+  if (live !== undefined) return { session: live, events: [...live.events] }
+  const persistence = ctx.get('sessionPersistence')
+  if (persistence === undefined || typeof persistence.inspect !== 'function') {
+    throw new MoveError('session persistence is not available', 500)
+  }
+  const inspected = await persistence.inspect(sessionId)
+  if (inspected?.meta === undefined) throw new MoveError(`session not found: ${sessionId}`, 404)
+  return { session: undefined, events: [...(inspected.events ?? [])] }
 }
 
 // Generate an AI title for a session using the shared LLM title generation
@@ -642,16 +667,15 @@ async function renameSessionWithAi(ctx, sessionId, configOverride) {
   }
 
   // 2. Collect human user messages from the live log. Long conversations are
-  //    truncated to a bounded tail (first + recent messages) so the title LLM
-  //    input stays under maxInputBytes — a title needs the gist, not the
-  //    full transcript.
+  //    sampled evenly across the timeline so the title model sees the arc of
+  //    the conversation while the input stays under maxInputBytes.
   const events = [...session.events]
   if (events.length === 0) throw new MoveError(`session has no message history: ${sessionId}`, 400)
   const allMessages = collectSessionTitleMessages(events)
   if (allMessages.length === 0) throw new MoveError(`session has no user messages to summarize: ${sessionId}`, 400)
   const messages = selectTitleMessages(allMessages, config.maxInputBytes)
 
-  // 3. Generate the title through the shared engine (append happens inside).
+  // 3. Generate the title through our own prompt (fixes typos, concise).
   //    The route comes from the session's own last request header (its
   //    current model), falling back to a plugin-configured provider/model
   //    pair when the session has never issued a request.
@@ -675,15 +699,7 @@ async function renameSessionWithAi(ctx, sessionId, configOverride) {
     signal: new AbortController().signal,
     route,
   }
-  const generated = await generateSessionTitleWithLlm(
-    ctx,
-    validated,
-    request,
-    messages,
-    'dsh-session-move/rename-ai',
-  )
-  const title = generated.title
-
+  const title = await generateTitleWithCustomPrompt(ctx, validated, request, messages)
   // 4. Apply through the sessionTitle service.
   const titleService = ctx.get('sessionTitle')
   if (titleService === undefined || typeof titleService.rename !== 'function') {
@@ -694,6 +710,63 @@ async function renameSessionWithAi(ctx, sessionId, configOverride) {
     title: accepted.title,
     sessionId,
   }
+}
+
+// Generate a session title with OUR OWN prompt instead of the official
+// session-title-llm one. The official prompt produces ultra-short titles
+// (≤10 CJK chars) and does not correct typos — user-reported issues. Our
+// prompt asks for a slightly fuller title that summarizes what the
+// conversation ACCOMPLISHED, and explicitly instructs the model to fix
+// obvious typos in the source messages.
+const TITLE_SYSTEM_PROMPT = [
+  'You are naming an AI coding-assistant chat session.',
+  'Read the human messages (they are a sample of the conversation) and write ONE concise title that captures the overall purpose of the session — what the user wanted and what was accomplished.',
+  'Do NOT repeat the literal opening words of the conversation; write a summary title.',
+  'IMPORTANT — fix typos: the source messages are raw user input and often contain typos or misspelled words. Always silently use the CORRECT, standard word in the title (e.g. a wrong character or a wrongly-typed term must be corrected, never copied as-is).',
+  'Be CONCISE: a short title, not a sentence or a full description.',
+  'Reply with only the title on one line: plain text, no quotes, no prefix, no explanation, no Markdown, no code.',
+  'Use the language of the messages (Chinese messages → Chinese title; English → English).',
+  `Aim for about ${'{cjk}'} CJK characters for Chinese or ${'{words}'} words for other languages — short and descriptive, like a file name, not a paragraph.`,
+].join('\n')
+
+async function generateTitleWithCustomPrompt(ctx, config, request, selectedMessages) {
+  if (selectedMessages.length === 0) throw new MoveError('at least one source message is required', 400)
+  const system = TITLE_SYSTEM_PROMPT
+    .replace('{cjk}', String(config.targetCjkCharacters))
+    .replace('{words}', String(config.targetWords))
+  const userText = `Generate the session title from this JSON array of human messages:\n${JSON.stringify(selectedMessages)}`
+  const messages = [createUserMessage({
+    content: [{ type: 'text', text: userText }],
+    source: { kind: 'plugin', plugin: 'dsh-session-move' },
+  })]
+  const options = {
+    provider: request.route.provider,
+    model: request.route.model,
+    messages,
+    system,
+    maxTokens: config.maxOutputTokens,
+    sessionId: request.session.id,
+    purpose: 'session-title',
+    signal: request.signal,
+  }
+  const assembler = new BlockAssembler()
+  for await (const chunk of ctx.llm.stream(options)) {
+    request.signal.throwIfAborted()
+    assembler.push(chunk)
+  }
+  const finish = assembler.finish
+  if (finish !== undefined && finish.kind !== 'stop' && finish.kind !== 'length') {
+    throw new MoveError(`title generation failed: unexpected finish ${JSON.stringify(finish)}`, 500)
+  }
+  const blocks = assembler.blocks()
+  const text = blocks
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text)
+    .join(' ')
+  if (text.trim().length === 0) throw new MoveError('title model produced no text', 500)
+  const title = normalizeSessionTitle(text, Number.MAX_SAFE_INTEGER)
+  if (title.length === 0) throw new MoveError('title model produced no text', 500)
+  return title
 }
 
 // --- http helpers ------------------------------------------------------------
