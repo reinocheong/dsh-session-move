@@ -455,6 +455,12 @@ async function moveSessionCore(ctx, sessionId, workspaceId) {
           ? liveSessions.get(sessionId) : undefined
         if (live && live.header) {
           try { live.header.cwd = target.path } catch { /* frozen */ }
+          // A live session's header is a frozen snapshot restored from
+          // persistence; the in-place patch above cannot take effect. Replace
+          // the whole header object when the property is writable.
+          try {
+            if (Object.isFrozen(live.header)) live.header = { ...live.header, cwd: target.path }
+          } catch { /* read-only getter: detach below handles it */ }
         }
         const updatedHeader = { ...header, cwd: target.path }
         if (typeof reg.headers?.set === 'function') reg.headers.set(sessionId, updatedHeader)
@@ -462,6 +468,15 @@ async function moveSessionCore(ctx, sessionId, workspaceId) {
         if (typeof reg.invalidSessionPaths?.delete === 'function') reg.invalidSessionPaths.delete(sessionId)
       } catch { /* best-effort */ }
     }
+    // The workspace attach validates the session's cwd through the registry's
+    // readSessionHeader, which prefers the LIVE agents store — and a live
+    // session's header is a frozen snapshot that the patch above cannot
+    // rewrite. A stale live cwd would fail the attach and leave the session
+    // ungrouped. Detach the session from the live agents store (same posture
+    // as the delete plugin) so the attach validates against the refreshed
+    // header cache / on-disk header, and the session reloads cold from its
+    // new location. No-op when the session is already cold.
+    detachLiveSession(ctx, sessionId)
     // Now attach. If oldCwd belongs to a different workspace, detach first.
     if (oldWorkspace && oldWorkspace.workspaceId !== target.workspaceId) {
       const entity = reg && typeof reg.get === 'function' ? reg.get(oldWorkspace.workspaceId) : undefined
@@ -485,7 +500,7 @@ async function moveSessionCore(ctx, sessionId, workspaceId) {
     } catch { /* best-effort flush */ }
     return {
       moved: false,
-      reattached: !alreadyAccounted,
+      reattached: !alreadyAccounted && attachError === null,
       projRefreshed,
       sessionId,
       oldCwd,
@@ -538,6 +553,12 @@ async function moveSessionCore(ctx, sessionId, workspaceId) {
         // on the session entity; the on-disk artifact was already rewritten,
         // so keeping the in-memory view aligned is safe).
         try { live.header.cwd = target.path } catch { /* frozen or read-only */ }
+        // A live session's header is often a frozen snapshot restored from
+        // persistence, so the in-place patch cannot take effect. Replace the
+        // whole header object when the property is writable.
+        try {
+          if (Object.isFrozen(live.header)) live.header = { ...live.header, cwd: target.path }
+        } catch { /* read-only getter: the detach below handles it */ }
       }
       if (typeof reg.headers?.set === 'function') {
         reg.headers.set(sessionId, updatedHeader)
@@ -556,7 +577,14 @@ async function moveSessionCore(ctx, sessionId, workspaceId) {
   // 7. Update workspace accounting: detach from the old workspace, attach to
   //    the new one (attachSession validates the header cwd == target path —
   //    now satisfied by the refreshed in-memory index — and re-accounts the
-  //    session under the target workspace).
+  //    session under the target workspace). First detach the session from the
+  //    live agents store: a live session's header is a frozen snapshot that
+  //    the patch above cannot rewrite, and readSessionHeader prefers the live
+  //    store, so a stale live cwd would fail the attach and leave the session
+  //    ungrouped. Removing it from the live store (same posture as the delete
+  //    plugin) makes the attach validate against the refreshed cache and lets
+  //    the session reload cold from its new location. No-op when cold.
+  detachLiveSession(ctx, sessionId)
   let oldWorkspaceId = null
   if (oldWorkspace) {
     oldWorkspaceId = oldWorkspace.workspaceId
