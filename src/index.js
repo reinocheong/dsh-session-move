@@ -299,6 +299,42 @@ async function readWorkspaces(ctx) {
   return out
 }
 
+// Rewrite the session's projection-cache identity cwd in place (rows — stats,
+// title, goal — are preserved). The projection cache binds a record to the log
+// identity {id, createdAt, cwd} it was folded from and is the source the web
+// session list / cold transcript reads use to resolve the log path. A move
+// rewrites the on-disk header cwd and relocates the log directory, so the
+// cached identity must follow — otherwise every cold read resolves the OLD
+// projectKey slug and fails with ENOENT, and the UI shows the session as
+// ungrouped. Fail-soft: if the unit is absent or the record is gone (no cache
+// row yet), there is nothing to fix — the next cold read folds from the header.
+async function refreshProjectionCwd(ctx, sessionId, newCwd) {
+  const sd = ctx.get('storageDomain')
+  if (!sd || typeof sd.get !== 'function') return false
+  const proj = sd.get('session_projcache')
+  if (!proj || typeof proj.table !== 'function') return false
+  try {
+    const sessions = proj.table('sessions')
+    let updated = false
+    for (const variant of sessionIdVariants(sessionId)) {
+      const rec = sessions.get(variant)
+      if (
+        rec &&
+        rec.identity &&
+        typeof rec.identity === 'object' &&
+        rec.identity.cwd !== newCwd
+      ) {
+        await sessions.put(variant, { ...rec, identity: { ...rec.identity, cwd: newCwd } })
+        updated = true
+      }
+    }
+    return updated
+  } catch (e) {
+    ctx.logger?.warn?.('[dsh-session-move] projection cache cwd refresh failed:', e?.message ?? e)
+    return false
+  }
+}
+
 // --- core move ---------------------------------------------------------------
 
 async function moveSessionCore(ctx, sessionId, workspaceId) {
@@ -333,6 +369,10 @@ async function moveSessionCore(ctx, sessionId, workspaceId) {
   if (oldCwd === target.path) {
     // Check whether the session is actually recorded in the target workspace.
     const alreadyAccounted = target.sessionIds.includes(sessionId)
+    // The physical state may already be right while the projection cache still
+    // carries the old identity (e.g. a previous half-applied move). Refresh it
+    // so the web resolves the correct slug either way.
+    await refreshProjectionCwd(ctx, sessionId, target.path)
     if (alreadyAccounted) {
       return {
         moved: false,
@@ -376,6 +416,7 @@ async function moveSessionCore(ctx, sessionId, workspaceId) {
     }
     // Ensure the workspace table is persisted to disk so the attach survives
     // a restart (storageDomain may batch writes).
+    const projRefreshed = await refreshProjectionCwd(ctx, sessionId, target.path)
     try {
       const sd = ctx.get('storageDomain')
       if (sd && typeof sd.flush === 'function') await sd.flush()
@@ -383,6 +424,7 @@ async function moveSessionCore(ctx, sessionId, workspaceId) {
     return {
       moved: false,
       reattached: !alreadyAccounted,
+      projRefreshed,
       sessionId,
       oldCwd,
       newCwd: target.path,
@@ -471,7 +513,9 @@ async function moveSessionCore(ctx, sessionId, workspaceId) {
       ctx.logger?.warn?.('[dsh-session-move] attach failed:', e?.message ?? e)
     }
   }
-  // Persist workspace table to disk so the attach survives a restart.
+  // Refresh the projection-cache identity so the web resolves the new slug,
+  // then persist the workspace table so the attach survives a restart.
+  const projRefreshed = await refreshProjectionCwd(ctx, sessionId, target.path)
   try {
     const sd = ctx.get('storageDomain')
     if (sd && typeof sd.flush === 'function') await sd.flush()
@@ -480,6 +524,7 @@ async function moveSessionCore(ctx, sessionId, workspaceId) {
   return {
     moved: true,
     stopped,
+    projRefreshed,
     sessionId,
     oldCwd,
     newCwd: target.path,
