@@ -1,5 +1,9 @@
 # dsh-session-move
 
+[![GitHub stars](https://img.shields.io/github/stars/reinocheong/dsh-session-move?style=flat-square)](https://github.com/reinocheong/dsh-session-move/stargazers)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
+
 **Manage DeepSeek Harness sessions from the Web UI — move, delete, and AI-rename, with drag & drop.**
 
 A dual-face (host + browser) plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh). It fills the gaps the official UI leaves open:
@@ -18,7 +22,7 @@ Each feature also ships as an **agent tool** (`workbench_session_move`, `workben
 
 ```sh
 # from GitHub (recommended until published to npm)
-dsh plugin --profile web add https://github.com/reinocheong/dsh-session-move/archive/refs/heads/main.tar.gz
+dsh plugin --profile web add https://github.com/reinocheong/dsh-session-move/archive/refs/tags/v0.1.0.tar.gz
 ```
 
 Restart the profile for the plugin to load:
