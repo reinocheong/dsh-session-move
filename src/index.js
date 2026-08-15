@@ -618,27 +618,11 @@ function selectTitleMessages(messages, maxInputBytes) {
   return best
 }
 
-// Resolve one session's events: live session first, persisted replay second.
-// (Kept for potential future read-only surfaces; the rename path needs the
-// live session object itself, so it resolves it directly.)
-async function readSessionEvents(ctx, sessionId) {
-  const live = ctx.sessions?.get?.(sessionId)
-  if (live !== undefined) return { session: live, events: [...live.events] }
-  const persistence = ctx.get('sessionPersistence')
-  if (persistence === undefined || typeof persistence.inspect !== 'function') {
-    throw new MoveError('session persistence is not available', 500)
-  }
-  const inspected = await persistence.inspect(sessionId)
-  if (inspected?.meta === undefined) throw new MoveError(`session not found: ${sessionId}`, 404)
-  return { session: undefined, events: [...(inspected.events ?? [])] }
-}
-
-// Generate an AI title for a session using the shared LLM title generation
-// (the same engine the official session-title-llm provider uses), then apply
-// it through the sessionTitle service. Both the generator and the rename need
-// a LIVE session: the generator appends a session/title-llm-request event and
-// rename appends a session/title event. Cold sessions are resumed through the
-// agent resolver (which materializes them in the store) first.
+// AI-rename a session: sample the conversation, generate a title with our own
+// prompt (fixes typos, concise), and apply it through the sessionTitle
+// service. Both generation and rename append to the session, so it must be
+// LIVE: live sessions are used directly, cold sessions are resumed through
+// the agents service (which materializes them in the store) first.
 async function renameSessionWithAi(ctx, sessionId, configOverride) {
   if (!SESSION_ID_RE.test(sessionId)) {
     throw new MoveError(`invalid session id: ${sessionId}`, 400)
