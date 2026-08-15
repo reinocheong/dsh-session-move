@@ -17,12 +17,7 @@ Each feature also ships as an **agent tool** (`workbench_session_move`, `workben
 ## Install
 
 ```sh
-dsh plugin --profile web add dsh-session-move
-```
-
-Or, from a local checkout / GitHub tarball:
-
-```sh
+# from GitHub (recommended until published to npm)
 dsh plugin --profile web add https://github.com/reinocheong/dsh-session-move/archive/refs/heads/main.tar.gz
 ```
 
@@ -74,7 +69,7 @@ By default it uses the session's own model route. To pin a different provider/mo
       model: deepseek-v4-flash
       targetWords: 5
       targetCjkCharacters: 10
-      maxInputBytes: 4096
+      maxInputBytes: 8192
       maxOutputTokens: 64
       timeoutMs: 60000
 ```
