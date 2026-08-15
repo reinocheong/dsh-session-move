@@ -56,7 +56,7 @@ Deletion is complete and permanent: running agents are stopped first, then the l
 
 ### ✨ AI rename
 
-Open a session's `...` menu → **AI Rename** — the LLM reads the conversation (opening intent + recent tail, bounded to the token budget) and writes a concise title in the conversation's language.
+Open a session's `...` menu → **AI Rename** — the LLM reads a representative sample across the whole conversation (evenly sampled to fit the token budget), fixes any typos, and writes a concise title in the conversation's language.
 
 By default it uses the session's own model route. To pin a different provider/model, configure the plugin row:
 
@@ -67,10 +67,10 @@ By default it uses the session's own model route. To pin a different provider/mo
     renameAi:
       provider: deepseek-official
       model: deepseek-v4-flash
-      targetWords: 5
-      targetCjkCharacters: 10
+      targetWords: 6
+      targetCjkCharacters: 14
       maxInputBytes: 8192
-      maxOutputTokens: 64
+      maxOutputTokens: 96
       timeoutMs: 60000
 ```
 
