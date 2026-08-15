@@ -17,12 +17,7 @@
 ## 安装
 
 ```sh
-dsh plugin --profile web add dsh-session-move
-```
-
-或从本地目录 / GitHub tarball 安装：
-
-```sh
+# 从 GitHub 安装（发布到 npm 前的推荐方式）
 dsh plugin --profile web add https://github.com/reinocheong/dsh-session-move/archive/refs/heads/main.tar.gz
 ```
 
@@ -74,7 +69,7 @@ sudo systemctl restart dsh
       model: deepseek-v4-flash
       targetWords: 5
       targetCjkCharacters: 10
-      maxInputBytes: 4096
+      maxInputBytes: 8192
       maxOutputTokens: 64
       timeoutMs: 60000
 ```
