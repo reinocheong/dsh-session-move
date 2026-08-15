@@ -325,16 +325,70 @@ async function moveSessionCore(ctx, sessionId, workspaceId) {
   const { header, frameBytes, frameIndex } = await readSessionHeader(sessionDirPath)
   const oldCwd = header.cwd
 
-  // 3. No-op when the session already lives in the target workspace.
+  // 3. When the session already lives in the target directory, the physical
+  //    move is a no-op — but the workspace accounting might still be missing
+  //    (e.g. after a failed attach in a previous move attempt). Detect and
+  //    repair that case instead of returning silently.
   const oldWorkspace = workspaces.find((w) => w.path === oldCwd) || null
   if (oldCwd === target.path) {
+    // Check whether the session is actually recorded in the target workspace.
+    const alreadyAccounted = target.sessionIds.includes(sessionId)
+    if (alreadyAccounted) {
+      return {
+        moved: false,
+        sessionId,
+        oldCwd,
+        newCwd: target.path,
+        oldWorkspaceId: oldWorkspace ? oldWorkspace.workspaceId : null,
+        newWorkspaceId: target.workspaceId,
+      }
+    }
+    // Session is in the right directory but missing from the workspace table —
+    // fall through to the attach step below. Refresh in-memory caches first.
+    const reg = ctx.get('workspaceRegistry')
+    if (reg && typeof reg === 'object') {
+      try {
+        const liveSessions = ctx.get('sessions')
+        const live = liveSessions && typeof liveSessions.get === 'function'
+          ? liveSessions.get(sessionId) : undefined
+        if (live && live.header) {
+          try { live.header.cwd = target.path } catch { /* frozen */ }
+        }
+        const updatedHeader = { ...header, cwd: target.path }
+        if (typeof reg.headers?.set === 'function') reg.headers.set(sessionId, updatedHeader)
+        if (typeof reg.sessionPaths?.set === 'function') reg.sessionPaths.set(sessionId, target.path)
+        if (typeof reg.invalidSessionPaths?.delete === 'function') reg.invalidSessionPaths.delete(sessionId)
+      } catch { /* best-effort */ }
+    }
+    // Now attach. If oldCwd belongs to a different workspace, detach first.
+    if (oldWorkspace && oldWorkspace.workspaceId !== target.workspaceId) {
+      const entity = reg && typeof reg.get === 'function' ? reg.get(oldWorkspace.workspaceId) : undefined
+      if (entity && typeof entity.detachSession === 'function') {
+        try { await entity.detachSession(sessionId) } catch { /* ignore */ }
+      }
+    }
+    let attachError = null
+    const newEntity = reg && typeof reg.get === 'function' ? reg.get(target.workspaceId) : undefined
+    if (newEntity && typeof newEntity.attachSession === 'function') {
+      try { await newEntity.attachSession(sessionId) } catch (e) {
+        attachError = String(e?.message ?? e)
+      }
+    }
+    // Ensure the workspace table is persisted to disk so the attach survives
+    // a restart (storageDomain may batch writes).
+    try {
+      const sd = ctx.get('storageDomain')
+      if (sd && typeof sd.flush === 'function') await sd.flush()
+    } catch { /* best-effort flush */ }
     return {
       moved: false,
+      reattached: !alreadyAccounted,
       sessionId,
       oldCwd,
       newCwd: target.path,
       oldWorkspaceId: oldWorkspace ? oldWorkspace.workspaceId : null,
       newWorkspaceId: target.workspaceId,
+      ...(attachError !== null ? { attachError } : {}),
     }
   }
 
@@ -410,11 +464,18 @@ async function moveSessionCore(ctx, sessionId, workspaceId) {
     }
   }
   const newEntity = reg && typeof reg.get === 'function' ? reg.get(target.workspaceId) : undefined
+  let attachError = null
   if (newEntity && typeof newEntity.attachSession === 'function') {
     try { await newEntity.attachSession(sessionId) } catch (e) {
+      attachError = String(e?.message ?? e)
       ctx.logger?.warn?.('[dsh-session-move] attach failed:', e?.message ?? e)
     }
   }
+  // Persist workspace table to disk so the attach survives a restart.
+  try {
+    const sd = ctx.get('storageDomain')
+    if (sd && typeof sd.flush === 'function') await sd.flush()
+  } catch { /* best-effort flush */ }
 
   return {
     moved: true,
@@ -424,6 +485,7 @@ async function moveSessionCore(ctx, sessionId, workspaceId) {
     newCwd: target.path,
     oldWorkspaceId,
     newWorkspaceId: target.workspaceId,
+    ...(attachError !== null ? { attachError } : {}),
   }
 }
 
