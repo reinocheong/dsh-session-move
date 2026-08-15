@@ -56,7 +56,7 @@ sudo systemctl restart dsh
 
 ### ✨ AI 重命名
 
-打开会话的 `...` 菜单 → **AI 重命名** — LLM 阅读整个对话（开头意图 + 最近的对话，控制在 token 预算内），用对话本身的语言生成简洁标题。
+打开会话的 `...` 菜单 → **AI 重命名** — LLM 阅读整个对话的**均匀采样**（控制 token 预算内覆盖全时间线），自动纠正错别字，用对话本身的语言生成简洁标题。
 
 默认使用会话自身的模型路由。要固定别的 provider/model，配置插件行：
 
@@ -67,10 +67,10 @@ sudo systemctl restart dsh
     renameAi:
       provider: deepseek-official
       model: deepseek-v4-flash
-      targetWords: 5
-      targetCjkCharacters: 10
+      targetWords: 6
+      targetCjkCharacters: 14
       maxInputBytes: 8192
-      maxOutputTokens: 64
+      maxOutputTokens: 96
       timeoutMs: 60000
 ```
 
