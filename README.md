@@ -22,7 +22,7 @@ Each feature also ships as an **agent tool** (`workbench_session_move`, `workben
 
 ```sh
 # from GitHub (recommended until published to npm)
-dsh plugin --profile web add https://github.com/reinocheong/dsh-session-move/archive/refs/tags/v0.1.0.tar.gz
+dsh plugin --profile web add https://github.com/reinocheong/dsh-session-move/archive/refs/tags/v0.1.1.tar.gz
 ```
 
 Restart the profile for the plugin to load:
@@ -113,6 +113,16 @@ dsh folders ("workspaces") are **not** free-form containers. A session belongs t
 4. detach from the old workspace and attach to the new one through the workspace registry (which also refreshes the in-memory index, so the UI updates instantly — no restart needed).
 
 All storage mutation goes through dsh's own `storageDomain`, keeping memory and disk consistent; nothing is left half-accounted.
+
+### Reliability (v0.1.1)
+
+The move keeps **every** place a session's location is recorded in sync — not just the header and the log directory:
+
+- **Projection cache** — the session's `identity.cwd` in the projection cache (`session_projcache`) follows the move, so the web session list resolves the correct storage slug immediately (no `ENOENT` on cold sessions and no "Ungrouped" residue after a move).
+- **Boot reconciliation** — on startup the plugin audits every stored projection-cache record against its on-disk header and repairs stale `identity.cwd` entries left behind by earlier half-applied moves or manual reorgs, so the list shows real session titles from the first render instead of the folder placeholder.
+- **Live sessions** — a session that is loaded in memory when moved has a frozen header snapshot; the plugin detaches it from the live agents store before re-attaching it to the target workspace, so the attach validation never sees a stale `cwd` (this was the cause of moves silently landing in "Ungrouped" while the physical move succeeded).
+
+Each fix is fail-soft: if a repair can't run, the plugin logs a warning and leaves the state untouched rather than corrupting it.
 
 ---
 

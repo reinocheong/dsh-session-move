@@ -22,7 +22,7 @@
 
 ```sh
 # 从 GitHub 安装（发布到 npm 前的推荐方式）
-dsh plugin --profile web add https://github.com/reinocheong/dsh-session-move/archive/refs/tags/v0.1.0.tar.gz
+dsh plugin --profile web add https://github.com/reinocheong/dsh-session-move/archive/refs/tags/v0.1.1.tar.gz
 ```
 
 重启 profile 使插件生效：
@@ -113,6 +113,16 @@ dsh 的「文件夹」（workspace）**不是**随意归类的容器。会话属
 4. 通过 workspace registry 从旧 workspace 摘除、挂到新 workspace（同时刷新内存索引，UI 即时更新，无需重启）。
 
 所有存储变更都经由 dsh 自身的 `storageDomain`，内存与磁盘保持一致，不会留下半挂账的记录。
+
+### 可靠性（v0.1.1）
+
+移动会把会话位置的**每一处**记录都同步到位——不止 header 和日志目录：
+
+- **投影缓存**——会话在投影缓存（`session_projcache`）里的 `identity.cwd` 会跟着移动更新，web 会话列表立刻解析到正确的存储 slug（冷会话不再 `ENOENT`，移动后不再留下「未分组」残留）。
+- **启动对账**——插件启动时会审计每一条投影缓存记录与磁盘 header 是否一致，修复历史上半途移动或手动整理留下的陈旧 `identity.cwd`，让列表首屏就显示真实会话标题，而不是文件夹占位名。
+- **活会话**——移动时如果会话正加载在内存中，其 header 是冻结的快照；插件会先从 live agents store 摘除再挂到目标工作区，挂载校验不会读到过期的 `cwd`（这正是「物理移动成功却掉进未分组」的根因）。
+
+每个修复都是 fail-soft：修不了就记一条 warning、保持原状，绝不损坏数据。
 
 ---
 
