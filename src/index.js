@@ -655,13 +655,19 @@ async function renameSessionWithAi(ctx, sessionId, configOverride) {
   }
 
   // 1. Resolve the LIVE session (generator + rename both append to it).
+  //    Live sessions are already attached; cold sessions are resumed through
+  //    the agents service (the same path the official API uses), which
+  //    materializes them in the session store.
   let session = ctx.sessions?.get?.(sessionId)
   if (session === undefined) {
-    const resolver = ctx.get('agentResolver') ?? ctx.get('apiRemoteResolver')
-    if (resolver !== undefined && typeof resolver === 'function') {
-      const found = await resolver(sessionId)
-      if (found && found.agent) session = found.agent.session
-      else session = ctx.sessions?.get?.(sessionId)
+    const agents = ctx.get('agents')
+    if (agents !== undefined && typeof agents.resume === 'function') {
+      try {
+        await agents.resume({ resumeSessionId: sessionId })
+      } catch (e) {
+        ctx.logger?.warn?.('[dsh-session-move] cold-session resume failed:', e?.message ?? e)
+      }
+      session = ctx.sessions?.get?.(sessionId)
     }
     if (session === undefined) throw new MoveError(`session not found: ${sessionId}`, 404)
   }
