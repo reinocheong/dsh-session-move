@@ -1,5 +1,9 @@
 # dsh-session-move
 
+[![GitHub stars](https://img.shields.io/github/stars/reinocheong/dsh-session-move?style=flat-square)](https://github.com/reinocheong/dsh-session-move/stargazers)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
+
 **在 DeepSeek Harness 网页界面里管理会话 —— 移动、删除、AI 重命名，支持拖拽。**
 
 面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) 的双端插件（宿主 + 浏览器）。补齐官方界面缺失的能力：
@@ -18,7 +22,7 @@
 
 ```sh
 # 从 GitHub 安装（发布到 npm 前的推荐方式）
-dsh plugin --profile web add https://github.com/reinocheong/dsh-session-move/archive/refs/heads/main.tar.gz
+dsh plugin --profile web add https://github.com/reinocheong/dsh-session-move/archive/refs/tags/v0.1.0.tar.gz
 ```
 
 重启 profile 使插件生效：
