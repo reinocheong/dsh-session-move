@@ -335,6 +335,68 @@ async function refreshProjectionCwd(ctx, sessionId, newCwd) {
   }
 }
 
+// Reconcile stale projection-cache identities at boot. The web session list
+// serves a cold session's projections (title, stats, ...) from the cache's
+// identity-checked record: cachedSnapshot returns the stored row only when
+// record.identity {id, createdAt, cwd} matches the on-disk header. A record
+// whose cwd went stale — written before the header's cwd changed (an earlier
+// half-applied move, a manual reorg, …) — fails that check; the row is served
+// WITHOUT projections, and the client falls back to the workspace-folder
+// placeholder name (e.g. "闲聊") until the session is opened (the open path
+// cold-reads and writes the row back with the current identity). Rewrite the
+// stale identity.cwd in place (rows preserved) and flush, so the list shows
+// real titles from the first render. Fail-soft; retries until the storage
+// units are ready (apply may run before the projcache table initializes).
+async function reconcileProjectionIdentities(ctx, { attempts = 10, delayMs = 1000 } = {}) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const sd = ctx.get('storageDomain')
+    const proj = sd && typeof sd.get === 'function' ? sd.get('session_projcache') : undefined
+    if (proj && typeof proj.table === 'function') {
+      let table
+      try { table = proj.table('sessions') } catch { table = undefined }
+      if (table) {
+        let scanned = 0
+        let repaired = 0
+        const failures = []
+        try {
+          const ids = [...table.keys()]
+          for (const id of ids) {
+            const rec = table.get(id)
+            if (!rec || !rec.identity || typeof rec.identity !== 'object') continue
+            scanned++
+            const dirs = findSessionDirs(id)
+            if (dirs.length === 0) continue // record without files: leave for GC
+            let header
+            try {
+              ;({ header } = await readSessionHeader(dirs[0]))
+            } catch {
+              continue // header unreadable: cannot verify
+            }
+            if (!header || typeof header.cwd !== 'string' || header.cwd.length === 0) continue
+            if (rec.identity.cwd === header.cwd) continue
+            await table.put(id, { ...rec, identity: { ...rec.identity, cwd: header.cwd } })
+            repaired++
+          }
+          if (repaired > 0) {
+            try { await sd.flush() } catch { /* best-effort */ }
+          }
+        } catch (e) {
+          failures.push(String(e?.message ?? e))
+        }
+        if (repaired > 0 || failures.length > 0) {
+          ctx.logger?.info?.(
+            `[dsh-session-move] projection-cache reconcile: scanned=${scanned} repaired=${repaired}` +
+            (failures.length ? ` failures=${failures.join('; ')}` : '')
+          )
+        }
+        return { scanned, repaired }
+      }
+    }
+    if (attempt < attempts) await new Promise((r) => setTimeout(r, delayMs))
+  }
+  return { scanned: 0, repaired: 0 }
+}
+
 // --- core move ---------------------------------------------------------------
 
 async function moveSessionCore(ctx, sessionId, workspaceId) {
@@ -1140,6 +1202,13 @@ function apply(ctx, config) {
       }
     },
   }))
+
+  // Repair stale projection-cache identities at boot so the session list
+  // shows real titles immediately instead of the workspace-folder placeholder
+  // until a session is opened. Fire-and-forget: never blocks apply/boot.
+  setTimeout(() => {
+    void reconcileProjectionIdentities(ctx).catch(() => {})
+  }, 500)
 }
 
 export { apply, inject, name }
