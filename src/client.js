@@ -188,19 +188,42 @@ window.__ModuleLoader__.load({
 
     // After a session move the host detaches the session from its live
     // registries (session/disposed + agent/disposed) and the client flags the
-    // resident conversation instance as `removed`, which disables the input
-    // ("session unavailable") and cannot be cleared without rebuilding the
-    // view. The only guaranteed way to rebuild it is a full page reload: the
-    // client restores the persisted selection and re-opens the moved session
-    // cold from its new location (history intact). Fail-soft: if reload is
-    // unavailable, fall back to refreshing the session list in place.
-    function reloadAfterMove(svc) {
+    // resident conversation instance as `removed` (input disabled, "session
+    // unavailable"). The core cannot reset that flag in place: the staged
+    // scope must be torn down and the session re-opened cold. Seamless path:
+    // move the stage to another listed session FIRST — while the moved
+    // session is still unlisted, sweepDeferred actually drops its scope —
+    // then refresh the list and bounce back; the view rebuilds without a
+    // page reload (brief switch to the other session and back). Any failure
+    // falls back to a full page reload so the view can never stay stuck.
+    function reloadAfterMove(svc, sessionId, wasCurrent) {
       if (!svc) return Promise.resolve()
+      if (!wasCurrent) return refreshSessions(svc)
+      if (typeof svc.open !== 'function') return refreshSessions(svc)
+      let other = null
       try {
-        window.location.reload()
-        return Promise.resolve()
+        const snap = svc.list.getSnapshot()
+        other = Object.keys(snap.byId || {}).find((id) => id !== sessionId) || null
       } catch { /* ignore */ }
-      return refreshSessions(svc)
+      if (other === null) {
+        // No other session to bounce through: full reload rebuilds the view.
+        try { window.location.reload() } catch { /* ignore */ }
+        return Promise.resolve()
+      }
+      try {
+        svc.open(other)
+      } catch {
+        try { window.location.reload() } catch { /* ignore */ }
+        return Promise.resolve()
+      }
+      // The stage is now on `other` and the moved session's stale scope has
+      // been dropped (it was still unlisted at that point). Re-list it, then
+      // reopen from its new location — resolve() builds a fresh instance.
+      return refreshSessions(svc).then(() => {
+        try {
+          svc.open(sessionId)
+        } catch { try { window.location.reload() } catch { /* ignore */ } }
+      })
     }
 
     // --- move dialog ---------------------------------------------------------
@@ -262,6 +285,16 @@ window.__ModuleLoader__.load({
 
       const confirm = useCallback(() => {
         if (busy || !target || !selected) return
+        // Capture whether the moved session is the open one BEFORE the move:
+        // once the host detaches it, the list snapshot's `current` goes
+        // undefined (the removed session no longer matches `selected`).
+        let wasCurrent = false
+        try {
+          const svc = __sessionsSvc
+          if (svc && svc.list && typeof svc.list.getSnapshot === 'function') {
+            wasCurrent = svc.list.getSnapshot().current === target.sessionId
+          }
+        } catch { /* ignore */ }
         setBusy(true)
         setError(null)
         fetch('/__sessionmove/move', {
@@ -276,9 +309,9 @@ window.__ModuleLoader__.load({
               throw new Error(data.error || `move failed (HTTP ${res.status})`)
             }
             setTarget(null)
-            // Full page reload rebuilds the moved session's view from its new
-            // location; the client restores the selection after reload.
-            reloadAfterMove(__sessionsSvc).catch(() => {})
+            // Reload the moved session's view in place (seamless) when it was
+            // the open session; falls back to a full page reload on failure.
+            reloadAfterMove(__sessionsSvc, target.sessionId, wasCurrent).catch(() => {})
           })
           .catch((reason) => {
             setBusy(false)
@@ -969,10 +1002,17 @@ window.__ModuleLoader__.load({
       }
     }
 
-    // POST the move; on success reload the page so the moved session's view
-    // rebuilds from its new location. Reuses the same endpoint and reload
-    // flow as the dialog.
+    // POST the move; on success reload the moved session's view in place
+    // (seamless, with a full page reload as fallback). Reuses the same
+    // endpoint and reload flow as the dialog.
     function moveByDrop(sessionId, workspaceTitle) {
+      // Capture whether the dragged session is the open one BEFORE the move.
+      var wasCurrent = false
+      try {
+        if (__sessionsSvc && __sessionsSvc.list && typeof __sessionsSvc.list.getSnapshot === 'function') {
+          wasCurrent = __sessionsSvc.list.getSnapshot().current === sessionId
+        }
+      } catch { /* ignore */ }
       fetch('/__sessionmove/info')
         .then(function (r) { return r.json() })
         .then(function (data) {
@@ -989,7 +1029,7 @@ window.__ModuleLoader__.load({
             var payload = {}
             try { payload = await res.json() } catch { /* keep {} */ }
             if (!res.ok || !payload.ok) throw new Error(payload.error || ('move failed (HTTP ' + res.status + ')'))
-            reloadAfterMove(__sessionsSvc).catch(function () {})
+            reloadAfterMove(__sessionsSvc, sessionId, wasCurrent).catch(function () {})
           })
         })
         .catch(function (err) { /* surface quietly; drag-and-drop must never crash the UI */ })
