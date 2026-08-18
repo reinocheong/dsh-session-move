@@ -218,11 +218,13 @@ window.__ModuleLoader__.load({
         try {
           svc.open(other)
           // Let the stage settle on the bounce target, then reopen the moved
-          // session from its new location (cold read rebuilds the view).
+          // session from its new location (cold read rebuilds the view). If
+          // anything fails, fall back to a full reload so the view can never
+          // stay stuck on "session unavailable".
           setTimeout(() => {
-            try { svc.open(sessionId) } catch { /* surface quietly */ }
+            try { svc.open(sessionId) } catch { try { window.location.reload() } catch { /* ignore */ } }
           }, 80)
-        } catch { /* surface quietly; the list refresh above still lands */ }
+        } catch { try { window.location.reload() } catch { /* ignore */ } }
       })
     }
 
