@@ -22,7 +22,7 @@ Each feature also ships as an **agent tool** (`workbench_session_move`, `workben
 
 ```sh
 # from GitHub (recommended until published to npm)
-dsh plugin --profile web add https://github.com/reinocheong/dsh-session-move/archive/refs/tags/v0.1.1.tar.gz
+dsh plugin --profile web add https://github.com/reinocheong/dsh-session-move/archive/refs/tags/v0.1.2.tar.gz
 ```
 
 Restart the profile for the plugin to load:
@@ -97,7 +97,7 @@ These power the UI; they are also usable directly:
 | Endpoint | Method | Body | Returns |
 |---|---|---|---|
 | `/__sessionmove/info` | GET | — | all workspaces + the session's current workspace |
-| `/__sessionmove/move` | POST | `{ sessionId, workspaceId }` | move result (old/new cwd, workspace ids) |
+| `/__sessionmove/move` | POST | `{ sessionId, workspaceId }` | move result (old/new cwd, workspace ids, agentReleased) |
 | `/__sessionmove/delete` | POST | `{ sessionId }` | what was removed |
 | `/__sessionmove/rename-ai` | POST | `{ sessionId }` | the new title |
 
@@ -133,7 +133,7 @@ The plugin is designed to be lightweight:
 
 - **Zero runtime dependencies** — it only uses Node built-ins plus packages dsh already ships (`dsh-tools`, `dsh-llm`, `dsh-session-title`, `dsh-session-title-llm`). Nothing new is installed.
 - **No background work** — no timers, polling, or resident connections. Move/delete/rename are purely request-driven: work happens while the request runs, then the plugin goes idle.
-- **Tiny footprint** — the whole plugin is ~85 KB of source; its resident memory is negligible against a running dsh process.
+- **Tiny footprint** — the whole plugin is ~100 KB of source; its resident memory is negligible against a running dsh process.
 - **Fast operations** — the stateless endpoints answer in ~1 ms (e.g. `/__sessionmove/info`); the only potentially slow step is AI rename, which calls the LLM once on demand (a few seconds, timeout-configurable) and never runs otherwise.
 - **Cheap client side** — one DOM observer plus three dialogs that render only when opened; nothing runs in the browser while idle.
 
@@ -141,7 +141,7 @@ The plugin is designed to be lightweight:
 
 ## Requirements
 
-- Node.js `^22.19.0 || >=24.0.0` (same as dsh)
+- Node.js `>=22.19.0` (same as dsh)
 - dsh `0.1.0-rc.6` or newer
 - AI rename additionally needs the official `@deepseek-ai/dsh-session-title` / `@deepseek-ai/dsh-session-title-llm` packages (bundled with dsh)
 

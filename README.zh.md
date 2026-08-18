@@ -22,7 +22,7 @@
 
 ```sh
 # 从 GitHub 安装（发布到 npm 前的推荐方式）
-dsh plugin --profile web add https://github.com/reinocheong/dsh-session-move/archive/refs/tags/v0.1.1.tar.gz
+dsh plugin --profile web add https://github.com/reinocheong/dsh-session-move/archive/refs/tags/v0.1.2.tar.gz
 ```
 
 重启 profile 使插件生效：
@@ -97,7 +97,7 @@ sudo systemctl restart dsh
 | 端点 | 方法 | 请求体 | 返回 |
 |---|---|---|---|
 | `/__sessionmove/info` | GET | — | 所有 workspace + 会话当前所在 workspace |
-| `/__sessionmove/move` | POST | `{ sessionId, workspaceId }` | 移动结果（旧/新 cwd、workspace id） |
+| `/__sessionmove/move` | POST | `{ sessionId, workspaceId }` | 移动结果（旧/新 cwd、workspace id、agentReleased） |
 | `/__sessionmove/delete` | POST | `{ sessionId }` | 删除了什么 |
 | `/__sessionmove/rename-ai` | POST | `{ sessionId }` | 新标题 |
 
@@ -133,7 +133,7 @@ dsh 的「文件夹」（workspace）**不是**随意归类的容器。会话属
 
 - **零运行时依赖** — 只用 Node 内置模块 + dsh 自带的包（`dsh-tools`、`dsh-llm`、`dsh-session-title`、`dsh-session-title-llm`），不新增任何安装。
 - **无后台任务** — 没有定时器、轮询或常驻连接。移动/删除/重命名都是纯请求驱动：请求处理期间才干活，其余时间完全空闲。
-- **体积小** — 整个插件源码约 85KB，驻留内存相对于运行中的 dsh 进程可忽略。
+- **体积小** — 整个插件源码约 100KB，驻留内存相对于运行中的 dsh 进程可忽略。
 - **操作快** — 无状态端点响应约 1ms（如 `/__sessionmove/info`）；唯一可能稍慢的是 AI 重命名，它按需调用一次 LLM（几秒钟，超时可配置），平时绝不运行。
 - **客户端开销小** — 一个 DOM 观察器 + 三个弹窗组件（仅在打开时渲染），空闲时浏览器端零运行成本。
 
@@ -141,7 +141,7 @@ dsh 的「文件夹」（workspace）**不是**随意归类的容器。会话属
 
 ## 环境要求
 
-- Node.js `^22.19.0 || >=24.0.0`（与 dsh 一致）
+- Node.js `>=22.19.0`（与 package.json engines 一致）
 - dsh `0.1.0-rc.6` 或更新版本
 - AI 重命名需要官方 `@deepseek-ai/dsh-session-title` / `@deepseek-ai/dsh-session-title-llm` 包（dsh 自带）
 
