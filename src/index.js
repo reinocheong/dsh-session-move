@@ -258,6 +258,35 @@ async function stopAgentIfRunning(ctx, sessionId) {
   return true
 }
 
+// Release the live agent from the agents registry so the host stops reporting
+// the session as running and — crucially — any later re-open of the moved
+// session does not hang. The agent factory's waitForDrainingConfiguredIdentity
+// waits for BOTH the session AND the agent to leave their registries (it
+// listens for `session/disposed` and `agent/disposed`) before rebuilding a
+// live session; cancelling the turn alone leaves the agent registered, so the
+// wait never resolves and the moved session can never be re-opened/resumed.
+// Mirrors detachLiveSession for the sessions store (same posture as the
+// delete plugin). No-op when the session is already cold.
+function releaseAgentIfLive(ctx, sessionId) {
+  const agents = ctx.get('agents')
+  if (!agents || typeof agents.get !== 'function') return false
+  const store = agents.store
+  if (!store || typeof store.get !== 'function') return false
+  let released = false
+  for (const variant of sessionIdVariants(sessionId)) {
+    const entry = store.get(variant)
+    if (entry === undefined) continue
+    if (typeof agents.detachEntered === 'function') {
+      agents.detachEntered(entry)
+      released = true
+    } else if (typeof store.delete === 'function') {
+      store.delete(variant)
+      released = true
+    }
+  }
+  return released
+}
+
 // Flush a live session so dispose-time teardown has no pending writes that
 // could recreate the old log path after we move the directory.
 async function flushSessionIfLive(ctx, sessionId) {
@@ -475,7 +504,10 @@ async function moveSessionCore(ctx, sessionId, workspaceId) {
     // ungrouped. Detach the session from the live agents store (same posture
     // as the delete plugin) so the attach validates against the refreshed
     // header cache / on-disk header, and the session reloads cold from its
-    // new location. No-op when the session is already cold.
+    // new location. Release the agent first so a later re-open of this
+    // session is not blocked by the stale registration. No-op when the
+    // session is already cold.
+    const agentReleased = releaseAgentIfLive(ctx, sessionId)
     detachLiveSession(ctx, sessionId)
     // Now attach. If oldCwd belongs to a different workspace, detach first.
     if (oldWorkspace && oldWorkspace.workspaceId !== target.workspaceId) {
@@ -502,6 +534,7 @@ async function moveSessionCore(ctx, sessionId, workspaceId) {
       moved: false,
       reattached: !alreadyAccounted && attachError === null,
       projRefreshed,
+      agentReleased,
       sessionId,
       oldCwd,
       newCwd: target.path,
@@ -583,7 +616,10 @@ async function moveSessionCore(ctx, sessionId, workspaceId) {
   //    store, so a stale live cwd would fail the attach and leave the session
   //    ungrouped. Removing it from the live store (same posture as the delete
   //    plugin) makes the attach validate against the refreshed cache and lets
-  //    the session reload cold from its new location. No-op when cold.
+  //    the session reload cold from its new location. Release the agent first
+  //    so a later re-open of this session is not blocked by the stale
+  //    registration. No-op when cold.
+  const agentReleased = releaseAgentIfLive(ctx, sessionId)
   detachLiveSession(ctx, sessionId)
   let oldWorkspaceId = null
   if (oldWorkspace) {
@@ -614,6 +650,7 @@ async function moveSessionCore(ctx, sessionId, workspaceId) {
   return {
     moved: true,
     stopped,
+    agentReleased,
     projRefreshed,
     sessionId,
     oldCwd,
@@ -715,6 +752,7 @@ async function deleteSessionCore(ctx, sessionId) {
   }
   const stopped = await stopAgentIfRunning(ctx, sessionId)
   await flushSessionIfLive(ctx, sessionId)
+  const agentReleased = releaseAgentIfLive(ctx, sessionId)
   detachLiveSession(ctx, sessionId)
 
   const firstDirRemoved = removeSessionDirs(sessionId)
@@ -735,7 +773,7 @@ async function deleteSessionCore(ctx, sessionId) {
   if (!dirRemoved && !projRemoved && !workspaceRemoved) {
     throw new MoveError(`session not found: ${sessionId}`, 404)
   }
-  return { stopped, detached: true, dirRemoved, projRemoved, workspaceRemoved }
+  return { stopped, agentReleased, detached: true, dirRemoved, projRemoved, workspaceRemoved }
 }
 
 // --- core AI rename ----------------------------------------------------------

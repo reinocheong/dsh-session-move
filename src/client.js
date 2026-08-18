@@ -175,6 +175,57 @@ window.__ModuleLoader__.load({
       return null
     }
 
+    // Refresh the host session list through the client sessions service.
+    // The service exposes refresh() (preferred); refreshList() is kept as a
+    // fallback for older bundles. Fail-soft.
+    function refreshSessions(svc) {
+      if (!svc) return Promise.resolve()
+      const refresh = (typeof svc.refresh === 'function')
+        ? svc.refresh()
+        : (typeof svc.refreshList === 'function' ? svc.refreshList() : Promise.resolve())
+      return Promise.resolve(refresh).catch(() => { /* surface quietly */ })
+    }
+
+    // After a session move the host detaches the session from its live
+    // registries (session/disposed + agent/disposed). The client keeps a
+    // frozen "masked-gap" resident scope for the open conversation view, so
+    // sending there would fail silently until the stage moves. Reload the
+    // moved session: refresh the list, then — when it was the open session —
+    // bounce the selection through another listed session so the stale scope
+    // is torn down and the session re-opens cold from its new location.
+    // Falls back to a full page reload when no other session exists to bounce
+    // through. Fail-soft: never throws, never crashes the UI.
+    function reloadAfterMove(svc, sessionId) {
+      if (!svc) return Promise.resolve()
+      return refreshSessions(svc).then(() => {
+        let current = null
+        try {
+          const snap = svc.list && typeof svc.list.getSnapshot === 'function' ? svc.list.getSnapshot() : null
+          current = snap && snap.current ? snap.current : null
+        } catch { /* ignore */ }
+        if (current !== sessionId) return
+        if (typeof svc.open !== 'function') return
+        let other = null
+        try {
+          const snap = svc.list.getSnapshot()
+          other = Object.keys(snap.byId || {}).find((id) => id !== sessionId) || null
+        } catch { /* ignore */ }
+        if (other === null) {
+          // No other session to bounce through: full reload rebuilds the view.
+          try { window.location.reload() } catch { /* ignore */ }
+          return
+        }
+        try {
+          svc.open(other)
+          // Let the stage settle on the bounce target, then reopen the moved
+          // session from its new location (cold read rebuilds the view).
+          setTimeout(() => {
+            try { svc.open(sessionId) } catch { /* surface quietly */ }
+          }, 80)
+        } catch { /* surface quietly; the list refresh above still lands */ }
+      })
+    }
+
     // --- move dialog ---------------------------------------------------------
 
     function MoveSessionDialog(props) {
@@ -248,10 +299,7 @@ window.__ModuleLoader__.load({
               throw new Error(data.error || `move failed (HTTP ${res.status})`)
             }
             setTarget(null)
-            const svc = __sessionsSvc
-            if (svc && typeof svc.refreshList === 'function') {
-              svc.refreshList().catch(() => {})
-            }
+            reloadAfterMove(__sessionsSvc, target.sessionId).catch(() => {})
           })
           .catch((reason) => {
             setBusy(false)
@@ -449,10 +497,7 @@ window.__ModuleLoader__.load({
               throw new Error(data.error || ('delete failed (HTTP ' + res.status + ')'))
             }
             setTarget(null)
-            const svc = __sessionsSvc
-            if (svc && typeof svc.refreshList === 'function') {
-              svc.refreshList().catch(() => {})
-            }
+            refreshSessions(__sessionsSvc)
           })
           .catch((reason) => {
             setBusy(false)
@@ -632,10 +677,7 @@ window.__ModuleLoader__.load({
             }
             setDoneTitle(data.title)
             setBusy(false)
-            const svc = __sessionsSvc
-            if (svc && typeof svc.refreshList === 'function') {
-              svc.refreshList().catch(() => {})
-            }
+            refreshSessions(__sessionsSvc)
           })
           .catch((reason) => {
             setBusy(false)
@@ -967,10 +1009,7 @@ window.__ModuleLoader__.load({
             var payload = {}
             try { payload = await res.json() } catch { /* keep {} */ }
             if (!res.ok || !payload.ok) throw new Error(payload.error || ('move failed (HTTP ' + res.status + ')'))
-            var svc = __sessionsSvc
-            if (svc && typeof svc.refreshList === 'function') {
-              svc.refreshList().catch(function () {})
-            }
+            reloadAfterMove(__sessionsSvc, sessionId).catch(function () {})
           })
         })
         .catch(function (err) { /* surface quietly; drag-and-drop must never crash the UI */ })
